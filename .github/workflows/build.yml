@@ -63,6 +63,9 @@ jobs:
             https://github.com/GameNative/proton-wine.git gn-proton
           cd gn-proton && git sparse-checkout set android
           echo "Patches:" && ls android/patches/
+          # Copy android/ into wine-src so patched includes resolve correctly
+          # (patches reference ../../android/android_sysvshm/sys/shm.h)
+          cp -r android ../wine-src/android
 
       - name: Apply Android patches
         run: |
