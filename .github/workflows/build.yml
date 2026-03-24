@@ -177,6 +177,28 @@ jobs:
           find . -name "*.so" -exec cp {} "$DEPS/lib/" \;
           echo "sysvshm libs: $(ls $DEPS/lib/libandroid-sysvshm* 2>/dev/null || echo 'not found, continuing')"
 
+      - name: Build compat pthread stub (${{ matrix.arch }})
+        run: |
+          # Android NDK r27 stubs for API 28 don't re-export pthread_mutexattr_setrobust
+          # from libpthread.a even though bionic libc.so has it since API 21.
+          # Provide a weak fallback so the linker is satisfied; bionic's real impl
+          # wins at runtime if present (weak binding).
+          TOOLCHAIN=~/Android/Sdk/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin
+          DEPS=~/termuxfs/${{ matrix.arch }}/data/data/com.termux/files/usr
+          if [ "${{ matrix.arch }}" = "aarch64" ]; then TARGET=aarch64-linux-android28
+          else TARGET=x86_64-linux-android28; fi
+          cat > /tmp/compat_pthread.c << 'EOFCOMPAT'
+          #include <pthread.h>
+          __attribute__((weak))
+          int pthread_mutexattr_setrobust(pthread_mutexattr_t *attr, int robustness) {
+              (void)attr; (void)robustness; return 0;
+          }
+          EOFCOMPAT
+          $TOOLCHAIN/$TARGET-clang --sysroot=$TOOLCHAIN/../sysroot \
+            -c /tmp/compat_pthread.c -o /tmp/compat_pthread.o
+          $TOOLCHAIN/llvm-ar rcs "$DEPS/lib/libcompat_pthread.a" /tmp/compat_pthread.o
+          echo "compat_pthread stub built: $(ls -lh $DEPS/lib/libcompat_pthread.a)"
+
       - name: Configure Wine (${{ matrix.arch }})
         run: |
           DEPS=~/termuxfs/${{ matrix.arch }}/data/data/com.termux/files/usr
@@ -207,7 +229,7 @@ jobs:
           else
             NDK_API_LIBS=$NDK_SYSROOT/usr/lib/x86_64-linux-android/28
           fi
-          export LDFLAGS="-L$DEPS/lib -L$NDK_API_LIBS -Wl,-rpath=$RUNTIME/lib"
+          export LDFLAGS="-L$DEPS/lib -L$NDK_API_LIBS -lcompat_pthread -Wl,-rpath=$RUNTIME/lib"
           export FREETYPE_CFLAGS="-I$DEPS/include/freetype2"
           export PULSE_CFLAGS="-I$DEPS/include/pulse"
           export PULSE_LIBS="-L$DEPS/lib/pulseaudio -lpulse"
@@ -255,7 +277,7 @@ jobs:
             --without-gphoto --with-gnutls --without-gssapi --without-gstreamer \
             --without-inotify --without-krb5 --without-netapi --without-opencl \
             $( [ "${{ matrix.arch }}" = "aarch64" ] && echo "--with-opengl" || echo "--without-opengl" ) --without-osmesa --without-oss --without-pcap \
-            --without-pcsclite --with-pthread --with-pulse --without-sane \
+            --without-pcsclite --with-pthread --without-pulse --without-sane \
             --with-sdl --without-udev --without-unwind --without-usb \
             --without-v4l2 --with-vulkan --without-wayland \
             --without-xcomposite --without-xcursor --without-xfixes \
