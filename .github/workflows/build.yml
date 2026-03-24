@@ -201,7 +201,13 @@ jobs:
           # PTHREAD_MUTEX_ROBUST is not defined in Android bionic headers (wine 11.x uses it in pulse.c)
           WARN="-Wno-declaration-after-statement -Wno-implicit-function-declaration -Wno-int-conversion -DPTHREAD_MUTEX_ROBUST=1"
           export CFLAGS="$ARCH_CFLAGS $WARN" CXXFLAGS="$ARCH_CFLAGS $WARN"
-          export LDFLAGS="-L$DEPS/lib -Wl,-rpath=$RUNTIME/lib"
+          NDK_SYSROOT=$TOOLCHAIN/../sysroot
+          if [ "${{ matrix.arch }}" = "aarch64" ]; then
+            NDK_API_LIBS=$NDK_SYSROOT/usr/lib/aarch64-linux-android/28
+          else
+            NDK_API_LIBS=$NDK_SYSROOT/usr/lib/x86_64-linux-android/28
+          fi
+          export LDFLAGS="-L$DEPS/lib -L$NDK_API_LIBS -Wl,-rpath=$RUNTIME/lib"
           export FREETYPE_CFLAGS="-I$DEPS/include/freetype2"
           export PULSE_CFLAGS="-I$DEPS/include/pulse"
           export PULSE_LIBS="-L$DEPS/lib/pulseaudio -lpulse"
