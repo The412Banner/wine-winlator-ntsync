@@ -303,6 +303,15 @@ jobs:
       - name: Install + Package WCP (${{ matrix.arch }})
         run: |
           DEPS=~/termuxfs/${{ matrix.arch }}/data/data/com.termux/files/usr
+          TOOLCHAIN=~/Android/Sdk/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin
+          LLVM_MINGW=~/toolchains/${LLVM_MINGW_PKG}/bin
+          if [ "${{ matrix.arch }}" = "aarch64" ]; then TARGET=aarch64-linux-android28
+          else TARGET=x86_64-linux-android28; fi
+          # winebuild (invoked by make install) needs llvm-dlltool from llvm-mingw, not system llvm-18
+          export PATH=$LLVM_MINGW:$PATH
+          export CC=$TOOLCHAIN/$TARGET-clang CXX=$TOOLCHAIN/$TARGET-clang++
+          export AR=$TOOLCHAIN/llvm-ar RANLIB=$TOOLCHAIN/llvm-ranlib STRIP=$TOOLCHAIN/llvm-strip
+          export DLLTOOL=$LLVM_MINGW/llvm-dlltool
           INSTALL_DIR=$DEPS/../opt/wine
           OUTPUT=~/compiled-files-${{ matrix.arch }}
           ARCH_NAME=${{ matrix.arch == 'aarch64' && 'arm64ec' || 'x86_64' }}
