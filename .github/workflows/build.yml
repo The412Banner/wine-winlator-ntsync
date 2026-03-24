@@ -1,0 +1,182 @@
+name: Build Wine ARM64 (ntsync) for Winlator
+
+on:
+  workflow_dispatch:
+    inputs:
+      wine_version:
+        description: 'Wine version tag (e.g. wine-11.5)'
+        required: false
+        default: 'wine-11.5'
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        default: 'false'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    env:
+      WINE_VERSION: ${{ github.event.inputs.wine_version || 'wine-11.5' }}
+
+    steps:
+      - name: Add ARM64 architecture and install dependencies
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo sed -i 's/^deb /deb [arch=amd64,i386] /' /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe multiverse restricted" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe multiverse restricted" | sudo tee -a /etc/apt/sources.list
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
+            gcc-mingw-w64-i686 g++-mingw-w64-i686 \
+            mingw-w64-tools \
+            flex bison \
+            pkg-config gettext \
+            libgnutls28-dev \
+            libfreetype-dev \
+            libfontconfig-dev \
+            libjpeg-dev \
+            libpng-dev \
+            libxml2-dev \
+            libxslt1-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libpulse-dev \
+            libudev-dev \
+            libdbus-1-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcomposite-dev libxcursor-dev libxi-dev libxfixes-dev \
+            libxrender-dev libxinerama-dev \
+            libvulkan-dev \
+            libsdl2-dev \
+            libpcap-dev \
+            libusb-1.0-0-dev \
+            libasound2-dev \
+            libkrb5-dev \
+            libgl-dev \
+            ocl-icd-opencl-dev \
+            libldap-dev \
+            libgphoto2-dev \
+            libsane-dev \
+            libcups2-dev \
+            unixodbc-dev \
+            libgnutls28-dev:arm64 \
+            libfreetype-dev:arm64 \
+            libfontconfig-dev:arm64 \
+            libjpeg-dev:arm64 \
+            libpng-dev:arm64 \
+            libxml2-dev:arm64 \
+            libxslt1-dev:arm64 \
+            libpulse-dev:arm64 \
+            libudev-dev:arm64 \
+            libdbus-1-dev:arm64 \
+            libx11-dev:arm64 libxext-dev:arm64 libxrandr-dev:arm64 libxcomposite-dev:arm64 \
+            libxcursor-dev:arm64 libxi-dev:arm64 libxfixes-dev:arm64 \
+            libxrender-dev:arm64 libxinerama-dev:arm64 \
+            libvulkan-dev:arm64 \
+            libsdl2-dev:arm64 \
+            libpcap-dev:arm64 \
+            libusb-1.0-0-dev:arm64 \
+            libasound2-dev:arm64 \
+            libkrb5-dev:arm64 \
+            libgl-dev:arm64
+
+      - name: Clone Wine source
+        run: |
+          echo "Cloning Wine $WINE_VERSION from WineHQ GitLab..."
+          git clone --depth=1 --branch "$WINE_VERSION" \
+            https://gitlab.winehq.org/wine/wine.git wine-src
+          echo "Wine source: $(git -C wine-src rev-parse HEAD)"
+
+      - name: Build host tools (x86_64)
+        run: |
+          mkdir build-tools
+          cd build-tools
+          ../wine-src/configure \
+            --enable-win64 \
+            --without-x \
+            --without-freetype \
+            --disable-tests
+          make -j$(nproc) tools/all
+
+      - name: Configure Wine for ARM64 cross-compile
+        run: |
+          mkdir build-arm64
+          cd build-arm64
+          PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig \
+          PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig \
+          ../wine-src/configure \
+            --host=aarch64-linux-gnu \
+            --with-wine-tools=../build-tools \
+            --with-mingw \
+            --prefix=/opt/wine \
+            --disable-tests \
+            CFLAGS="-O2 -pipe -march=armv8-a" \
+            CROSSCFLAGS="-O2 -pipe" \
+            LDFLAGS="-Wl,-O1"
+          echo "--- Configure summary ---"
+          grep -E "^(ntsync|esync|fsync|Vulkan|OpenGL|Gstreamer|Pulseaudio|X11|ALSA)" config.log | head -40 || true
+
+      - name: Build Wine ARM64
+        run: |
+          cd build-arm64
+          make -j$(nproc)
+
+      - name: Package
+        run: |
+          mkdir -p package/opt
+          cd build-arm64
+          make install DESTDIR="$GITHUB_WORKSPACE/package"
+          cd "$GITHUB_WORKSPACE/package"
+          # Rename prefix dir to plain "wine" for Winlator compatibility
+          mv opt/wine opt/wine-arm64
+          tar -cJf \
+            "$GITHUB_WORKSPACE/${WINE_VERSION}-arm64-ntsync-winlator.tar.xz" \
+            -C opt wine-arm64
+          echo "Package size: $(du -sh "$GITHUB_WORKSPACE/${WINE_VERSION}-arm64-ntsync-winlator.tar.xz")"
+          # Generate SHA256
+          sha256sum "$GITHUB_WORKSPACE/${WINE_VERSION}-arm64-ntsync-winlator.tar.xz" \
+            > "$GITHUB_WORKSPACE/${WINE_VERSION}-arm64-ntsync-winlator.tar.xz.sha256"
+
+      - name: Get Wine commit info
+        id: info
+        run: |
+          WINE_COMMIT=$(git -C wine-src rev-parse HEAD)
+          WINE_COMMIT_SHORT=$(git -C wine-src rev-parse --short HEAD)
+          echo "commit=$WINE_COMMIT" >> $GITHUB_OUTPUT
+          echo "commit_short=$WINE_COMMIT_SHORT" >> $GITHUB_OUTPUT
+          echo "date=$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.WINE_VERSION }}-arm64-ntsync
+          name: "${{ env.WINE_VERSION }} ARM64 ntsync (Winlator) — ${{ steps.info.outputs.date }}"
+          prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+          body: |
+            ## Wine ${{ env.WINE_VERSION }} — ARM64 ntsync build for Winlator
+
+            | Field | Value |
+            |-------|-------|
+            | Wine version | `${{ env.WINE_VERSION }}` |
+            | Source commit | `${{ steps.info.outputs.commit }}` |
+            | Target arch | `aarch64-linux-gnu` |
+            | Sync backends | ntsync / fsync / esync (runtime selectable) |
+            | PE DLLs | mingw-w64 (x86_64 + i686) |
+            | Build date | `${{ steps.info.outputs.date }}` |
+
+            ### Sync backend (choose at runtime in Winlator advanced settings)
+            - **ntsync** — best performance if kernel has `/dev/ntsync` (`WINE_NTSYNC=1`)
+            - **fsync** — futex2-based, good on modern kernels (`WINEFSYNC=1`)
+            - **esync** — eventfd-based, widest compatibility (`WINEESYNC=1`)
+
+            ### Installation (Winlator)
+            1. Download `${{ env.WINE_VERSION }}-arm64-ntsync-winlator.tar.xz`
+            2. In Winlator → Settings → Wine Version → Import → select the file
+            3. Set as active Wine version in your container settings
+
+            ### Source
+            - Wine: https://gitlab.winehq.org/wine/wine/-/tree/${{ env.WINE_VERSION }}
+            - Build script: https://github.com/${{ github.repository }}
+          files: |
+            ${{ env.WINE_VERSION }}-arm64-ntsync-winlator.tar.xz
+            ${{ env.WINE_VERSION }}-arm64-ntsync-winlator.tar.xz.sha256
