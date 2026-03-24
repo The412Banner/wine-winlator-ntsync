@@ -141,7 +141,6 @@ jobs:
           ../wine-src/configure \
             --enable-win64 \
             --without-x \
-            --without-freetype \
             --disable-tests
           make -j$(nproc)
 
