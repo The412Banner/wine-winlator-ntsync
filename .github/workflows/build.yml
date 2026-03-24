@@ -214,7 +214,14 @@ jobs:
           export FONTCONFIG_CFLAGS="-I$DEPS/include"
           export FONTCONFIG_LIBS="-L$DEPS/lib -lfontconfig"
           export GL_CFLAGS="-I$DEPS/include"
-          export GL_LIBS="-L$DEPS/lib -lGL"
+          if [ "${{ matrix.arch }}" = "aarch64" ]; then
+            export GL_LIBS="-L$DEPS/lib -lGL"
+          else
+            # x86_64 Termux sysroot uses GLESv2 rather than desktop GL
+            export GL_LIBS="-L$DEPS/lib -lGLESv2"
+            export GLESV2_CFLAGS="-I$DEPS/include"
+            export GLESV2_LIBS="-L$DEPS/lib -lGLESv2"
+          fi
           export VULKAN_CFLAGS="-I$DEPS/include"
           export VULKAN_LIBS="-L$DEPS/lib -lvulkan"
           INSTALL_DIR=$DEPS/../opt/wine
@@ -235,7 +242,7 @@ jobs:
             --without-gcrypt --without-gettext --with-gettextpo=no \
             --without-gphoto --with-gnutls --without-gssapi --with-gstreamer \
             --without-inotify --without-krb5 --without-netapi --without-opencl \
-            --with-opengl --without-osmesa --without-oss --without-pcap \
+            $( [ "${{ matrix.arch }}" = "aarch64" ] && echo "--with-opengl" || echo "--without-opengl" ) --without-osmesa --without-oss --without-pcap \
             --without-pcsclite --with-pthread --with-pulse --without-sane \
             --with-sdl --without-udev --without-unwind --without-usb \
             --without-v4l2 --with-vulkan --without-wayland \
