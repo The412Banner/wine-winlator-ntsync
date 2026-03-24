@@ -193,6 +193,9 @@ jobs:
           export AR=$TOOLCHAIN/llvm-ar RANLIB=$TOOLCHAIN/llvm-ranlib STRIP=$TOOLCHAIN/llvm-strip
           export DLLTOOL=$LLVM_MINGW/llvm-dlltool
           export PKG_CONFIG_LIBDIR=$DEPS/lib/pkgconfig:$DEPS/share/pkgconfig
+          export PKG_CONFIG_SYSROOT_DIR=$HOME/termuxfs/${{ matrix.arch }}
+          export PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1
+          export PKG_CONFIG_ALLOW_SYSTEM_LIBS=1
           export ACLOCAL_PATH=$DEPS/lib/aclocal:$DEPS/share/aclocal
           export CPPFLAGS="-I$DEPS/include --sysroot=$TOOLCHAIN/../sysroot"
           WARN="-Wno-declaration-after-statement -Wno-implicit-function-declaration -Wno-int-conversion"
