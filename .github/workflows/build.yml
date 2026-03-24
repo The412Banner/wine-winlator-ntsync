@@ -246,7 +246,7 @@ jobs:
             --with-alsa --without-capi --without-coreaudio --without-cups \
             --without-dbus --without-ffmpeg --with-fontconfig --with-freetype \
             --without-gcrypt --without-gettext --with-gettextpo=no \
-            --without-gphoto --with-gnutls --without-gssapi --with-gstreamer \
+            --without-gphoto --with-gnutls --without-gssapi --without-gstreamer \
             --without-inotify --without-krb5 --without-netapi --without-opencl \
             $( [ "${{ matrix.arch }}" = "aarch64" ] && echo "--with-opengl" || echo "--without-opengl" ) --without-osmesa --without-oss --without-pcap \
             --without-pcsclite --with-pthread --with-pulse --without-sane \
