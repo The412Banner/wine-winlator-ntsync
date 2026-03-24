@@ -1,14 +1,22 @@
-name: Build Wine ARM64 (ntsync) for Winlator
+name: Build Wine ARM64 for Winlator (ntsync)
 
 on:
   workflow_dispatch:
     inputs:
       wine_version:
-        description: 'Wine version tag (e.g. wine-11.5)'
+        description: 'Wine version (e.g. 11.5)'
         required: false
-        default: 'wine-11.5'
+        default: '11.5'
+      branch:
+        description: 'Branch: vanilla | staging | staging-tkg'
+        required: false
+        default: 'vanilla'
+      wow64:
+        description: 'Build WoW64 variant (arm64 runs 32-bit apps too)'
+        required: false
+        default: 'true'
       prerelease:
-        description: 'Mark as pre-release'
+        description: 'Mark release as pre-release'
         required: false
         default: 'false'
 
@@ -16,78 +24,117 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     env:
-      WINE_VERSION: ${{ github.event.inputs.wine_version || 'wine-11.5' }}
+      WINE_VERSION: ${{ github.event.inputs.wine_version || '11.5' }}
+      WINE_BRANCH: ${{ github.event.inputs.branch || 'vanilla' }}
+      BUILD_WOW64: ${{ github.event.inputs.wow64 || 'true' }}
 
     steps:
-      - name: Add ARM64 architecture and install dependencies
+      - name: Add ARM64 arch and install dependencies
         run: |
           sudo dpkg --add-architecture arm64
+          # Restrict existing sources to amd64/i386, add arm64 ports
           sudo sed -i 's/^deb /deb [arch=amd64,i386] /' /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe multiverse restricted" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe multiverse restricted" | sudo tee -a /etc/apt/sources.list
+          cat <<'EOF' | sudo tee -a /etc/apt/sources.list
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe multiverse restricted
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe multiverse restricted
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main universe multiverse restricted
+          EOF
           sudo apt-get update -qq
+
+          # Build tools
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
             gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
             gcc-mingw-w64-i686 g++-mingw-w64-i686 \
             mingw-w64-tools \
-            flex bison \
+            flex bison autoconf \
             pkg-config gettext \
+            wget xz-utils
+
+          # Host (amd64) dev libs for building wine-tools
+          sudo apt-get install -y \
             libgnutls28-dev \
-            libfreetype-dev \
-            libfontconfig-dev \
-            libjpeg-dev \
-            libpng-dev \
-            libxml2-dev \
-            libxslt1-dev \
+            libfreetype-dev libfontconfig-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcomposite-dev \
+            libxcursor-dev libxi-dev libxfixes-dev libxrender-dev libxinerama-dev \
+            libvulkan-dev libgl-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            libpulse-dev \
-            libudev-dev \
-            libdbus-1-dev \
-            libx11-dev libxext-dev libxrandr-dev libxcomposite-dev libxcursor-dev libxi-dev libxfixes-dev \
-            libxrender-dev libxinerama-dev \
-            libvulkan-dev \
-            libsdl2-dev \
-            libpcap-dev \
-            libusb-1.0-0-dev \
-            libasound2-dev \
-            libkrb5-dev \
-            libgl-dev \
-            ocl-icd-opencl-dev \
-            libldap-dev \
-            libgphoto2-dev \
-            libsane-dev \
-            libcups2-dev \
-            unixodbc-dev \
+            libpulse-dev libasound2-dev \
+            libudev-dev libdbus-1-dev \
+            libsdl2-dev libpcap-dev libusb-1.0-0-dev \
+            libkrb5-dev libldap-dev libcups2-dev \
+            libxml2-dev libxslt1-dev libjpeg-dev libpng-dev \
+            ocl-icd-opencl-dev unixodbc-dev
+
+          # ARM64 target libs
+          sudo apt-get install -y \
             libgnutls28-dev:arm64 \
-            libfreetype-dev:arm64 \
-            libfontconfig-dev:arm64 \
-            libjpeg-dev:arm64 \
-            libpng-dev:arm64 \
-            libxml2-dev:arm64 \
-            libxslt1-dev:arm64 \
-            libpulse-dev:arm64 \
-            libudev-dev:arm64 \
-            libdbus-1-dev:arm64 \
+            libfreetype-dev:arm64 libfontconfig-dev:arm64 \
             libx11-dev:arm64 libxext-dev:arm64 libxrandr-dev:arm64 libxcomposite-dev:arm64 \
             libxcursor-dev:arm64 libxi-dev:arm64 libxfixes-dev:arm64 \
             libxrender-dev:arm64 libxinerama-dev:arm64 \
-            libvulkan-dev:arm64 \
-            libsdl2-dev:arm64 \
-            libpcap-dev:arm64 \
-            libusb-1.0-0-dev:arm64 \
-            libasound2-dev:arm64 \
-            libkrb5-dev:arm64 \
-            libgl-dev:arm64
+            libvulkan-dev:arm64 libgl-dev:arm64 \
+            libgstreamer1.0-dev:arm64 libgstreamer-plugins-base1.0-dev:arm64 \
+            libpulse-dev:arm64 libasound2-dev:arm64 \
+            libudev-dev:arm64 libdbus-1-dev:arm64 \
+            libsdl2-dev:arm64 libpcap-dev:arm64 libusb-1.0-0-dev:arm64 \
+            libkrb5-dev:arm64 libldap-dev:arm64 libcups2-dev:arm64 \
+            libxml2-dev:arm64 libxslt1-dev:arm64 libjpeg-dev:arm64 libpng-dev:arm64 \
+            ocl-icd-opencl-dev:arm64
 
-      - name: Clone Wine source
+      - name: Download Wine source
         run: |
-          echo "Cloning Wine $WINE_VERSION from WineHQ GitLab..."
-          git clone --depth=1 --branch "$WINE_VERSION" \
-            https://gitlab.winehq.org/wine/wine.git wine-src
-          echo "Wine source: $(git -C wine-src rev-parse HEAD)"
+          # Stable = X.0, Development = X.x
+          MINOR=$(echo "$WINE_VERSION" | cut -d. -f2)
+          if [ "$MINOR" = "0" ]; then
+            URL_VER=$(echo "$WINE_VERSION" | cut -d. -f1).0
+          else
+            URL_VER=$(echo "$WINE_VERSION" | cut -d. -f1).x
+          fi
+          echo "Downloading wine-${WINE_VERSION}.tar.xz ..."
+          wget -q --show-progress \
+            "https://dl.winehq.org/wine/source/${URL_VER}/wine-${WINE_VERSION}.tar.xz"
+          tar xf "wine-${WINE_VERSION}.tar.xz"
+          mv "wine-${WINE_VERSION}" wine-src
 
-      - name: Build host tools (x86_64)
+      - name: Apply Wine-Staging patches
+        if: env.WINE_BRANCH == 'staging' || env.WINE_BRANCH == 'staging-tkg'
+        run: |
+          echo "Downloading wine-staging v${WINE_VERSION} ..."
+          wget -q --show-progress \
+            "https://github.com/wine-staging/wine-staging/archive/v${WINE_VERSION}.tar.gz"
+          tar xf "v${WINE_VERSION}.tar.gz"
+
+          cd wine-src
+          if [ -f "../wine-staging-${WINE_VERSION}/patches/patchinstall.sh" ]; then
+            "../wine-staging-${WINE_VERSION}/patches/patchinstall.sh" \
+              DESTDIR="$PWD" --all
+          else
+            "../wine-staging-${WINE_VERSION}/staging/patchinstall.py" --all
+          fi
+          echo "Staging patches applied."
+
+      - name: Apply TKG patches
+        if: env.WINE_BRANCH == 'staging-tkg'
+        run: |
+          echo "Cloning wine-tkg patchset ..."
+          git clone --depth=1 https://github.com/Kron4ek/wine-tkg tkg-src
+          # Apply any extra TKG patches on top of staging
+          if [ -d tkg-src/patches ]; then
+            for p in tkg-src/patches/*.patch; do
+              patch -d wine-src -Np1 < "$p" && echo "Applied: $p" || echo "SKIP: $p"
+            done
+          fi
+
+      - name: Prepare Wine source
+        run: |
+          cd wine-src
+          dlls/winevulkan/make_vulkan || true
+          tools/make_requests
+          tools/make_specfiles
+          autoreconf -f
+
+      - name: Build host tools (x86_64 — needed for cross-compile)
         run: |
           mkdir build-tools
           cd build-tools
@@ -98,7 +145,7 @@ jobs:
             --disable-tests
           make -j$(nproc) tools/all
 
-      - name: Configure Wine for ARM64 cross-compile
+      - name: Cross-compile Wine for ARM64
         run: |
           mkdir build-arm64
           cd build-arm64
@@ -108,75 +155,110 @@ jobs:
             --host=aarch64-linux-gnu \
             --with-wine-tools=../build-tools \
             --with-mingw \
-            --prefix=/opt/wine \
+            --enable-win64 \
+            --without-oss \
+            --disable-winemenubuilder \
             --disable-tests \
-            CFLAGS="-O2 -pipe -march=armv8-a" \
-            CROSSCFLAGS="-O2 -pipe" \
-            LDFLAGS="-Wl,-O1"
-          echo "--- Configure summary ---"
-          grep -E "^(ntsync|esync|fsync|Vulkan|OpenGL|Gstreamer|Pulseaudio|X11|ALSA)" config.log | head -40 || true
-
-      - name: Build Wine ARM64
-        run: |
-          cd build-arm64
+            CFLAGS="-march=armv8-a -O2 -ftree-vectorize -pipe" \
+            CROSSCFLAGS="-O2 -ftree-vectorize -pipe" \
+            LDFLAGS="-Wl,-O1,--sort-common,--as-needed" \
+            CC=aarch64-linux-gnu-gcc \
+            CXX=aarch64-linux-gnu-g++ \
+            CROSSCC_X64=x86_64-w64-mingw32-gcc \
+            CROSSCXX_X64=x86_64-w64-mingw32-g++ \
+            CROSSCC_X32=i686-w64-mingw32-gcc \
+            CROSSCXX_X32=i686-w64-mingw32-g++
           make -j$(nproc)
 
-      - name: Package
+      - name: Package standard ARM64 build
         run: |
-          mkdir -p package/opt
+          mkdir -p install-arm64
           cd build-arm64
-          make install DESTDIR="$GITHUB_WORKSPACE/package"
-          cd "$GITHUB_WORKSPACE/package"
-          # Rename prefix dir to plain "wine" for Winlator compatibility
-          mv opt/wine opt/wine-arm64
-          tar -cJf \
-            "$GITHUB_WORKSPACE/${WINE_VERSION}-arm64-ntsync-winlator.tar.xz" \
-            -C opt wine-arm64
-          echo "Package size: $(du -sh "$GITHUB_WORKSPACE/${WINE_VERSION}-arm64-ntsync-winlator.tar.xz")"
-          # Generate SHA256
-          sha256sum "$GITHUB_WORKSPACE/${WINE_VERSION}-arm64-ntsync-winlator.tar.xz" \
-            > "$GITHUB_WORKSPACE/${WINE_VERSION}-arm64-ntsync-winlator.tar.xz.sha256"
+          make install DESTDIR="$GITHUB_WORKSPACE/install-arm64"
+          cd "$GITHUB_WORKSPACE/install-arm64/usr"
+          mv local "wine-${WINE_VERSION}-${WINE_BRANCH}-arm64" 2>/dev/null || \
+          mv * "wine-${WINE_VERSION}-${WINE_BRANCH}-arm64" 2>/dev/null || true
+          # Find the install prefix and repack
+          cd "$GITHUB_WORKSPACE/install-arm64"
+          find . -maxdepth 3 -name "wine" -type f | head -5
+          # Tar everything under the prefix as wine-X.Y-branch-arm64/
+          INSTALL_PREFIX=$(find . -maxdepth 2 -name "bin" -type d | head -1 | xargs dirname)
+          mv "$INSTALL_PREFIX" "$GITHUB_WORKSPACE/wine-${WINE_VERSION}-${WINE_BRANCH}-arm64"
+          cd "$GITHUB_WORKSPACE"
+          XZ_OPT="-9 -T 0" tar -Jcf \
+            "wine-${WINE_VERSION}-${WINE_BRANCH}-arm64.tar.xz" \
+            "wine-${WINE_VERSION}-${WINE_BRANCH}-arm64"
+          sha256sum "wine-${WINE_VERSION}-${WINE_BRANCH}-arm64.tar.xz" \
+            > "wine-${WINE_VERSION}-${WINE_BRANCH}-arm64.tar.xz.sha256"
+          echo "Standard build: $(du -sh wine-${WINE_VERSION}-${WINE_BRANCH}-arm64.tar.xz)"
 
-      - name: Get Wine commit info
+      - name: Package WoW64 ARM64 build
+        if: env.BUILD_WOW64 == 'true'
+        run: |
+          WOW64_DIR="wine-${WINE_VERSION}-${WINE_BRANCH}-arm64-wow64"
+          cp -r "wine-${WINE_VERSION}-${WINE_BRANCH}-arm64" "$WOW64_DIR"
+          # WoW64: replace wine symlink with wine64, strip 32-bit unix libs
+          if [ -f "$WOW64_DIR/bin/wine64" ]; then
+            rm -f "$WOW64_DIR/bin/wine" "$WOW64_DIR/bin/wine-preloader"
+            cp "$WOW64_DIR/bin/wine64" "$WOW64_DIR/bin/wine"
+          fi
+          rm -rf "$WOW64_DIR/lib/wine/i386-unix" || true
+          XZ_OPT="-9 -T 0" tar -Jcf \
+            "${WOW64_DIR}.tar.xz" \
+            "$WOW64_DIR"
+          sha256sum "${WOW64_DIR}.tar.xz" > "${WOW64_DIR}.tar.xz.sha256"
+          echo "WoW64 build: $(du -sh ${WOW64_DIR}.tar.xz)"
+
+      - name: Collect release info
         id: info
         run: |
-          WINE_COMMIT=$(git -C wine-src rev-parse HEAD)
-          WINE_COMMIT_SHORT=$(git -C wine-src rev-parse --short HEAD)
-          echo "commit=$WINE_COMMIT" >> $GITHUB_OUTPUT
-          echo "commit_short=$WINE_COMMIT_SHORT" >> $GITHUB_OUTPUT
           echo "date=$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
+          TAG="${WINE_VERSION}-${WINE_BRANCH}-arm64"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.WINE_VERSION }}-arm64-ntsync
-          name: "${{ env.WINE_VERSION }} ARM64 ntsync (Winlator) — ${{ steps.info.outputs.date }}"
+          tag_name: ${{ steps.info.outputs.tag }}
+          name: "Wine ${{ env.WINE_VERSION }} ${{ env.WINE_BRANCH }} ARM64 (ntsync) — ${{ steps.info.outputs.date }}"
           prerelease: ${{ github.event.inputs.prerelease == 'true' }}
           body: |
-            ## Wine ${{ env.WINE_VERSION }} — ARM64 ntsync build for Winlator
+            ## Wine ${{ env.WINE_VERSION }} — ARM64 build for Winlator
 
             | Field | Value |
             |-------|-------|
             | Wine version | `${{ env.WINE_VERSION }}` |
-            | Source commit | `${{ steps.info.outputs.commit }}` |
+            | Branch | `${{ env.WINE_BRANCH }}` |
+            | Source | [dl.winehq.org](https://dl.winehq.org/wine/source/) |
             | Target arch | `aarch64-linux-gnu` |
-            | Sync backends | ntsync / fsync / esync (runtime selectable) |
-            | PE DLLs | mingw-w64 (x86_64 + i686) |
+            | PE DLLs | mingw-w64 x86_64 + i686 |
+            | CFLAGS | `-march=armv8-a -O2 -ftree-vectorize` |
+            | Sync backends | ntsync / fsync / esync (runtime via env vars) |
             | Build date | `${{ steps.info.outputs.date }}` |
 
-            ### Sync backend (choose at runtime in Winlator advanced settings)
-            - **ntsync** — best performance if kernel has `/dev/ntsync` (`WINE_NTSYNC=1`)
-            - **fsync** — futex2-based, good on modern kernels (`WINEFSYNC=1`)
-            - **esync** — eventfd-based, widest compatibility (`WINEESYNC=1`)
+            ### Sync backend (set in Winlator container advanced settings)
+            | Backend | Env var | Requirement |
+            |---------|---------|-------------|
+            | **ntsync** | `WINE_NTSYNC=1` | kernel 6.14+ with `/dev/ntsync` |
+            | **fsync** | `WINEFSYNC=1` | kernel with futex2 |
+            | **esync** | `WINEESYNC=1` | any kernel (wide compat) |
+
+            > ntsync info from Kron4ek: run `lsof /dev/ntsync` while Wine is running to confirm it works.
+
+            ### Files
+            - `*-arm64.tar.xz` — standard arm64, 64-bit Windows apps only
+            - `*-arm64-wow64.tar.xz` — WoW64 mode, runs both 32-bit and 64-bit Windows apps (recommended for Winlator)
 
             ### Installation (Winlator)
-            1. Download `${{ env.WINE_VERSION }}-arm64-ntsync-winlator.tar.xz`
-            2. In Winlator → Settings → Wine Version → Import → select the file
-            3. Set as active Wine version in your container settings
+            1. Download the `-wow64` variant
+            2. Winlator → Settings → Wine Version → Import → select the `.tar.xz`
+            3. Set as active Wine version for your container
 
-            ### Source
-            - Wine: https://gitlab.winehq.org/wine/wine/-/tree/${{ env.WINE_VERSION }}
-            - Build script: https://github.com/${{ github.repository }}
+            ### Build scripts
+            https://github.com/${{ github.repository }}
+            Based on [Kron4ek/Wine-Builds](https://github.com/Kron4ek/Wine-Builds) method, adapted for ARM64.
           files: |
-            ${{ env.WINE_VERSION }}-arm64-ntsync-winlator.tar.xz
-            ${{ env.WINE_VERSION }}-arm64-ntsync-winlator.tar.xz.sha256
+            wine-${{ env.WINE_VERSION }}-${{ env.WINE_BRANCH }}-arm64.tar.xz
+            wine-${{ env.WINE_VERSION }}-${{ env.WINE_BRANCH }}-arm64.tar.xz.sha256
+            wine-${{ env.WINE_VERSION }}-${{ env.WINE_BRANCH }}-arm64-wow64.tar.xz
+            wine-${{ env.WINE_VERSION }}-${{ env.WINE_BRANCH }}-arm64-wow64.tar.xz.sha256
