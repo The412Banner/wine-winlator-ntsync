@@ -173,22 +173,13 @@ jobs:
           mkdir -p install-arm64
           cd build-arm64
           make install DESTDIR="$GITHUB_WORKSPACE/install-arm64"
-          cd "$GITHUB_WORKSPACE/install-arm64/usr"
-          mv local "wine-${WINE_VERSION}-${WINE_BRANCH}-arm64" 2>/dev/null || \
-          mv * "wine-${WINE_VERSION}-${WINE_BRANCH}-arm64" 2>/dev/null || true
-          # Find the install prefix and repack
-          cd "$GITHUB_WORKSPACE/install-arm64"
-          find . -maxdepth 3 -name "wine" -type f | head -5
-          # Tar everything under the prefix as wine-X.Y-branch-arm64/
-          INSTALL_PREFIX=$(find . -maxdepth 2 -name "bin" -type d | head -1 | xargs dirname)
-          mv "$INSTALL_PREFIX" "$GITHUB_WORKSPACE/wine-${WINE_VERSION}-${WINE_BRANCH}-arm64"
+          # Default prefix is /usr/local — so installed files are at install-arm64/usr/local/
+          ARCHIVE="wine-${WINE_VERSION}-${WINE_BRANCH}-arm64"
+          mv "$GITHUB_WORKSPACE/install-arm64/usr/local" "$GITHUB_WORKSPACE/$ARCHIVE"
           cd "$GITHUB_WORKSPACE"
-          XZ_OPT="-9 -T 0" tar -Jcf \
-            "wine-${WINE_VERSION}-${WINE_BRANCH}-arm64.tar.xz" \
-            "wine-${WINE_VERSION}-${WINE_BRANCH}-arm64"
-          sha256sum "wine-${WINE_VERSION}-${WINE_BRANCH}-arm64.tar.xz" \
-            > "wine-${WINE_VERSION}-${WINE_BRANCH}-arm64.tar.xz.sha256"
-          echo "Standard build: $(du -sh wine-${WINE_VERSION}-${WINE_BRANCH}-arm64.tar.xz)"
+          XZ_OPT="-9 -T 0" tar -Jcf "${ARCHIVE}.tar.xz" "$ARCHIVE"
+          sha256sum "${ARCHIVE}.tar.xz" > "${ARCHIVE}.tar.xz.sha256"
+          echo "Standard build: $(du -sh ${ARCHIVE}.tar.xz)"
 
       - name: Package WoW64 ARM64 build
         if: env.BUILD_WOW64 == 'true'
