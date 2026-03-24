@@ -168,7 +168,11 @@ jobs:
           DEPS=~/termuxfs/aarch64/data/data/com.termux/files/usr
           cp -r gn-proton/android/android_sysvshm android_sysvshm
           cd android_sysvshm
-          CC="$TOOLCHAIN/aarch64-linux-android28-clang" make -f Makefile
+          make -f Makefile \
+            TOOLCHAIN="$TOOLCHAIN" \
+            TARGET="aarch64-linux-android28" \
+            OUTPUT_DIR="build-aarch64" \
+            OUTPUT="build-aarch64/libandroid-sysvshm.so"
           mkdir -p "$DEPS/lib"
           find . -name "*.so" -exec cp {} "$DEPS/lib/" \;
           echo "sysvshm libs: $(ls $DEPS/lib/libandroid-sysvshm* 2>/dev/null || echo 'not found, continuing')"
@@ -228,7 +232,8 @@ jobs:
             --without-xcomposite --without-xcursor --without-xfixes \
             --without-xinerama --without-xinput --without-xinput2 \
             --without-xrandr --without-xrender --without-xshape \
-            --with-xshm --without-xxf86vm
+            $( [ "${{ matrix.arch }}" = "aarch64" ] && echo "--with-xshm" || echo "--without-xshm" ) \
+            --without-xxf86vm
 
       - name: Build Wine (${{ matrix.arch }})
         run: |
