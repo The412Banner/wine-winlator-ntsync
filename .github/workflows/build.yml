@@ -1,4 +1,4 @@
-name: Build Wine ARM64 for Winlator (ntsync)
+name: Build Wine for Winlator Bionic (ntsync, WCP)
 
 on:
   workflow_dispatch:
@@ -7,14 +7,6 @@ on:
         description: 'Wine version (e.g. 11.5)'
         required: false
         default: '11.5'
-      branch:
-        description: 'Branch: vanilla | staging | staging-tkg'
-        required: false
-        default: 'vanilla'
-      wow64:
-        description: 'Build WoW64 variant (arm64 runs 32-bit apps too)'
-        required: false
-        default: 'true'
       prerelease:
         description: 'Mark release as pre-release'
         required: false
@@ -25,232 +17,316 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        arch: [aarch64, x86_64]
+      fail-fast: false
+
     env:
       WINE_VERSION: ${{ github.event.inputs.wine_version || '11.5' }}
-      WINE_BRANCH: ${{ github.event.inputs.branch || 'vanilla' }}
-      BUILD_WOW64: ${{ github.event.inputs.wow64 || 'true' }}
+      NDK_VERSION: 27.3.13750724
+      NDK_ZIP: android-ndk-r27d-linux.zip
+      LLVM_MINGW_TAG: 20250920
+      LLVM_MINGW_PKG: llvm-mingw-20250920-ucrt-ubuntu-22.04-x86_64
+      TERMUXFS_TAG: build-20260218
 
     steps:
-      - name: Add ARM64 arch and install dependencies
+      - name: Free disk space
         run: |
-          sudo dpkg --add-architecture arm64
-          # Restrict existing sources to amd64/i386, add arm64 ports
-          sudo sed -i 's/^deb /deb [arch=amd64,i386] /' /etc/apt/sources.list
-          cat <<'EOF' | sudo tee -a /etc/apt/sources.list
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe multiverse restricted
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe multiverse restricted
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main universe multiverse restricted
-          EOF
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo dpkg --add-architecture i386
           sudo apt-get update -qq
-
-          # Build tools
           sudo apt-get install -y \
-            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
-            gcc-mingw-w64-i686 g++-mingw-w64-i686 \
-            mingw-w64-tools \
-            flex bison autoconf \
-            pkg-config gettext \
-            wget xz-utils
+            build-essential git wget curl unzip \
+            flex bison gettext autoconf automake libtool pkg-config \
+            mingw-w64 gcc-multilib g++-multilib \
+            libfreetype6-dev libfreetype6-dev:i386 \
+            libpng-dev libpng-dev:i386 \
+            zlib1g-dev zlib1g-dev:i386
 
-          # Host (amd64) dev libs for building wine-tools
-          sudo apt-get install -y \
-            libgnutls28-dev \
-            libfreetype-dev libfontconfig-dev \
-            libx11-dev libxext-dev libxrandr-dev libxcomposite-dev \
-            libxcursor-dev libxi-dev libxfixes-dev libxrender-dev libxinerama-dev \
-            libvulkan-dev libgl-dev \
-            libunwind-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            libpulse-dev libasound2-dev \
-            libudev-dev libdbus-1-dev \
-            libsdl2-dev libpcap-dev libusb-1.0-0-dev \
-            libkrb5-dev libldap-dev libcups2-dev \
-            libxml2-dev libxslt1-dev libjpeg-dev libpng-dev \
-            ocl-icd-opencl-dev unixodbc-dev
-
-          # ARM64 target libs
-          sudo apt-get install -y \
-            libgnutls28-dev:arm64 \
-            libfreetype-dev:arm64 libfontconfig-dev:arm64 \
-            libx11-dev:arm64 libxext-dev:arm64 libxrandr-dev:arm64 libxcomposite-dev:arm64 \
-            libxcursor-dev:arm64 libxi-dev:arm64 libxfixes-dev:arm64 \
-            libxrender-dev:arm64 libxinerama-dev:arm64 \
-            libvulkan-dev:arm64 libgl-dev:arm64 \
-            libunwind-dev:arm64 libgstreamer1.0-dev:arm64 libgstreamer-plugins-base1.0-dev:arm64 \
-            libasound2-dev:arm64 \
-            libsdl2-dev:arm64 libpcap-dev:arm64 \
-            libkrb5-dev:arm64 libldap-dev:arm64 libcups2-dev:arm64 \
-            libxml2-dev:arm64 libxslt1-dev:arm64 libjpeg-dev:arm64 libpng-dev:arm64 \
-            ocl-icd-opencl-dev:arm64
-
-      - name: Download Wine source
+      - name: Download Wine ${{ env.WINE_VERSION }} source
         run: |
-          # Stable = X.0, Development = X.x
           MINOR=$(echo "$WINE_VERSION" | cut -d. -f2)
-          if [ "$MINOR" = "0" ]; then
-            URL_VER=$(echo "$WINE_VERSION" | cut -d. -f1).0
-          else
-            URL_VER=$(echo "$WINE_VERSION" | cut -d. -f1).x
-          fi
-          echo "Downloading wine-${WINE_VERSION}.tar.xz ..."
-          wget -q --show-progress \
-            "https://dl.winehq.org/wine/source/${URL_VER}/wine-${WINE_VERSION}.tar.xz"
+          [ "$MINOR" = "0" ] && URL_VER="$(echo $WINE_VERSION | cut -d. -f1).0" || URL_VER="$(echo $WINE_VERSION | cut -d. -f1).x"
+          wget -q --show-progress "https://dl.winehq.org/wine/source/${URL_VER}/wine-${WINE_VERSION}.tar.xz"
           tar xf "wine-${WINE_VERSION}.tar.xz"
           mv "wine-${WINE_VERSION}" wine-src
 
-      - name: Apply Wine-Staging patches
-        if: env.WINE_BRANCH == 'staging' || env.WINE_BRANCH == 'staging-tkg'
+      - name: Download GameNative Android patches
         run: |
-          echo "Downloading wine-staging v${WINE_VERSION} ..."
-          wget -q --show-progress \
-            "https://github.com/wine-staging/wine-staging/archive/v${WINE_VERSION}.tar.gz"
-          tar xf "v${WINE_VERSION}.tar.gz"
+          git clone --depth=1 --filter=blob:none --sparse \
+            https://github.com/GameNative/proton-wine.git gn-proton
+          cd gn-proton && git sparse-checkout set android
+          echo "Patches:" && ls android/patches/
 
+      - name: Apply Android patches
+        run: |
           cd wine-src
-          if [ -f "../wine-staging-${WINE_VERSION}/patches/patchinstall.sh" ]; then
-            "../wine-staging-${WINE_VERSION}/patches/patchinstall.sh" \
-              DESTDIR="$PWD" --all
-          else
-            "../wine-staging-${WINE_VERSION}/staging/patchinstall.py" --all
-          fi
-          echo "Staging patches applied."
-
-      - name: Apply TKG patches
-        if: env.WINE_BRANCH == 'staging-tkg'
-        run: |
-          echo "Cloning wine-tkg patchset ..."
-          git clone --depth=1 https://github.com/Kron4ek/wine-tkg tkg-src
-          # Apply any extra TKG patches on top of staging
-          if [ -d tkg-src/patches ]; then
-            for p in tkg-src/patches/*.patch; do
-              patch -d wine-src -Np1 < "$p" && echo "Applied: $p" || echo "SKIP: $p"
-            done
-          fi
+          PATCHES=(
+            android_network.patch dlls_nsiproxy_sys_ip_c.patch
+            midi_support.patch dlls_winebus_sys_bus_sdl_c.patch
+            dlls_ntdll_unix_esync_c.patch dlls_ntdll_unix_fsync_c.patch
+            server_esync_c.patch server_fsync_c.patch
+            dlls_winex11_drv_x11drv_h.patch dlls_winex11_drv_bitblt_c.patch
+            dlls_winex11_drv_desktop_c.patch dlls_winex11_drv_mouse_c.patch
+            dlls_winex11_drv_window_c.patch dlls_winex11_drv_x11drv_main_c.patch
+            dlls_ntdll_unix_virtual_c.patch loader_preloader_c.patch
+            dlls_ntdll_unix_signal_x86_64_c.patch
+            dlls_winepulse_drv_pulse_c.patch programs_explorer_desktop_c.patch
+            dlls_ntdll_unix_server_c.patch dlls_amd_ags_x64_unixlib_c.patch
+            dlls_winex11_drv_opengl_c.patch
+            programs_winemenubuilder_winemenubuilder_c.patch
+            dlls_advapi32_advapi_c.patch
+            programs_winebrowser_makefile_in.patch programs_winebrowser_main_c.patch
+            dlls_user32_makefile_in.patch dlls_user32_clipboard_c.patch
+            dlls_win32u_clipboard_c.patch
+            dlls_ntdll_loader_c.patch dlls_ntdll_unix_loader_c.patch
+            dlls_wow64_syscall_c.patch loader_wine_inf_in.patch
+            programs_wineboot_wineboot_c.patch dlls_wdscore_wdscore_spec.patch
+          )
+          APPLIED=0; SKIPPED=0
+          for p in "${PATCHES[@]}"; do
+            PF="../gn-proton/android/patches/$p"
+            if [ ! -f "$PF" ]; then echo "MISSING: $p"; SKIPPED=$((SKIPPED+1)); continue; fi
+            if git apply --check "$PF" 2>/dev/null; then
+              git apply "$PF" && echo "OK: $p" && APPLIED=$((APPLIED+1))
+            else
+              echo "SKIP (conflict): $p"; SKIPPED=$((SKIPPED+1))
+            fi
+          done
+          echo "Applied=$APPLIED Skipped=$SKIPPED"
 
       - name: Prepare Wine source
         run: |
           cd wine-src
           dlls/winevulkan/make_vulkan || true
-          tools/make_requests
-          tools/make_specfiles
+          tools/make_requests && tools/make_specfiles
           autoreconf -f
 
-      - name: Build host tools (x86_64 — needed for cross-compile)
-        run: |
-          mkdir build-tools
-          cd build-tools
-          ../wine-src/configure \
-            --enable-win64 \
-            --without-x \
-            --disable-tests
-          make -j$(nproc)
+      - name: Cache wine-tools
+        id: cache-wine-tools
+        uses: actions/cache@v4
+        with:
+          path: wine-tools
+          key: wine-tools-${{ env.WINE_VERSION }}-${{ hashFiles('wine-src/configure.ac') }}
 
-      - name: Cross-compile Wine for ARM64
+      - name: Build wine-tools (host)
+        if: steps.cache-wine-tools.outputs.cache-hit != 'true'
         run: |
-          mkdir build-arm64
-          cd build-arm64
-          PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig \
-          PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig \
-          ../wine-src/configure \
-            --host=aarch64-linux-gnu \
-            --with-wine-tools=../build-tools \
-            --with-mingw \
-            --enable-win64 \
-            --without-oss \
-            --disable-winemenubuilder \
-            --disable-tests \
-            CFLAGS="-march=armv8-a -O2 -ftree-vectorize -pipe" \
-            CROSSCFLAGS="-O2 -ftree-vectorize -pipe" \
-            LDFLAGS="-Wl,-O1,--sort-common,--as-needed" \
-            CC=aarch64-linux-gnu-gcc \
-            CXX=aarch64-linux-gnu-g++ \
-            CROSSCC_X64=x86_64-w64-mingw32-gcc \
-            CROSSCXX_X64=x86_64-w64-mingw32-g++ \
-            CROSSCC_X32=i686-w64-mingw32-gcc \
-            CROSSCXX_X32=i686-w64-mingw32-g++
-          make -j$(nproc)
+          mkdir wine-tools && cd wine-tools
+          ../wine-src/configure --without-x --without-gstreamer --without-vulkan --without-wayland
+          make -j$(nproc) __tooldeps__ nls/all
 
-      - name: Package standard ARM64 build
-        run: |
-          mkdir -p install-arm64
-          cd build-arm64
-          make install DESTDIR="$GITHUB_WORKSPACE/install-arm64"
-          # Default prefix is /usr/local — so installed files are at install-arm64/usr/local/
-          ARCHIVE="wine-${WINE_VERSION}-${WINE_BRANCH}-arm64"
-          mv "$GITHUB_WORKSPACE/install-arm64/usr/local" "$GITHUB_WORKSPACE/$ARCHIVE"
-          cd "$GITHUB_WORKSPACE"
-          XZ_OPT="-9 -T 0" tar -Jcf "${ARCHIVE}.tar.xz" "$ARCHIVE"
-          sha256sum "${ARCHIVE}.tar.xz" > "${ARCHIVE}.tar.xz.sha256"
-          echo "Standard build: $(du -sh ${ARCHIVE}.tar.xz)"
+      - name: Cache Android NDK
+        id: cache-ndk
+        uses: actions/cache@v4
+        with:
+          path: ~/Android/Sdk/ndk/${{ env.NDK_VERSION }}
+          key: android-ndk-${{ env.NDK_ZIP }}
 
-      - name: Package WoW64 ARM64 build
-        if: env.BUILD_WOW64 == 'true'
+      - name: Download Android NDK
+        if: steps.cache-ndk.outputs.cache-hit != 'true'
         run: |
-          WOW64_DIR="wine-${WINE_VERSION}-${WINE_BRANCH}-arm64-wow64"
-          cp -r "wine-${WINE_VERSION}-${WINE_BRANCH}-arm64" "$WOW64_DIR"
-          # WoW64: replace wine symlink with wine64, strip 32-bit unix libs
-          if [ -f "$WOW64_DIR/bin/wine64" ]; then
-            rm -f "$WOW64_DIR/bin/wine" "$WOW64_DIR/bin/wine-preloader"
-            cp "$WOW64_DIR/bin/wine64" "$WOW64_DIR/bin/wine"
+          mkdir -p ~/Android/Sdk/ndk && cd ~/Android/Sdk/ndk
+          wget -q --show-progress "https://dl.google.com/android/repository/$NDK_ZIP"
+          unzip -q "$NDK_ZIP" && mv android-ndk-r27d "$NDK_VERSION"
+
+      - name: Cache llvm-mingw
+        id: cache-llvm-mingw
+        uses: actions/cache@v4
+        with:
+          path: ~/toolchains/${{ env.LLVM_MINGW_PKG }}
+          key: llvm-mingw-${{ env.LLVM_MINGW_TAG }}
+
+      - name: Download llvm-mingw
+        if: steps.cache-llvm-mingw.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/toolchains && cd ~/toolchains
+          wget -q --show-progress \
+            "https://github.com/bylaws/llvm-mingw/releases/download/${LLVM_MINGW_TAG}/${LLVM_MINGW_PKG}.tar.xz"
+          tar xf "${LLVM_MINGW_PKG}.tar.xz"
+
+      - name: Download Termux sysroot (${{ matrix.arch }})
+        run: |
+          mkdir -p ~/termuxfs/${{ matrix.arch }} && cd ~/termuxfs/${{ matrix.arch }}
+          wget -q --show-progress \
+            "https://github.com/GameNative/termux-on-gha/releases/download/${TERMUXFS_TAG}/termuxfs-${{ matrix.arch }}.tar"
+          tar xf "termuxfs-${{ matrix.arch }}.tar"
+
+      - name: Build android_sysvshm (${{ matrix.arch }})
+        if: matrix.arch == 'aarch64'
+        run: |
+          TOOLCHAIN=~/Android/Sdk/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin
+          DEPS=~/termuxfs/aarch64/data/data/com.termux/files/usr
+          cp -r gn-proton/android/android_sysvshm android_sysvshm
+          cd android_sysvshm
+          CC="$TOOLCHAIN/aarch64-linux-android28-clang" make -f Makefile
+          mkdir -p "$DEPS/lib"
+          find . -name "*.so" -exec cp {} "$DEPS/lib/" \;
+          echo "sysvshm libs: $(ls $DEPS/lib/libandroid-sysvshm* 2>/dev/null || echo 'not found, continuing')"
+
+      - name: Configure Wine (${{ matrix.arch }})
+        run: |
+          DEPS=~/termuxfs/${{ matrix.arch }}/data/data/com.termux/files/usr
+          TOOLCHAIN=~/Android/Sdk/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin
+          LLVM_MINGW=~/toolchains/${LLVM_MINGW_PKG}/bin
+          RUNTIME=/data/data/com.termux/files/usr
+          if [ "${{ matrix.arch }}" = "aarch64" ]; then
+            TARGET=aarch64-linux-android28; WIN_ARCH="arm64ec,aarch64,i386"; ARCH_CFLAGS=""
+          else
+            TARGET=x86_64-linux-android28; WIN_ARCH="x86_64,i386"; ARCH_CFLAGS="-march=x86-64 -mtune=generic"
           fi
-          rm -rf "$WOW64_DIR/lib/wine/i386-unix" || true
-          XZ_OPT="-9 -T 0" tar -Jcf \
-            "${WOW64_DIR}.tar.xz" \
-            "$WOW64_DIR"
-          sha256sum "${WOW64_DIR}.tar.xz" > "${WOW64_DIR}.tar.xz.sha256"
-          echo "WoW64 build: $(du -sh ${WOW64_DIR}.tar.xz)"
+          export PATH=$LLVM_MINGW:$PATH
+          export CC=$TOOLCHAIN/$TARGET-clang CXX=$TOOLCHAIN/$TARGET-clang++
+          export AR=$TOOLCHAIN/llvm-ar RANLIB=$TOOLCHAIN/llvm-ranlib STRIP=$TOOLCHAIN/llvm-strip
+          export DLLTOOL=$LLVM_MINGW/llvm-dlltool
+          export PKG_CONFIG_LIBDIR=$DEPS/lib/pkgconfig:$DEPS/share/pkgconfig
+          export ACLOCAL_PATH=$DEPS/lib/aclocal:$DEPS/share/aclocal
+          export CPPFLAGS="-I$DEPS/include --sysroot=$TOOLCHAIN/../sysroot"
+          WARN="-Wno-declaration-after-statement -Wno-implicit-function-declaration -Wno-int-conversion"
+          export CFLAGS="$ARCH_CFLAGS $WARN" CXXFLAGS="$ARCH_CFLAGS $WARN"
+          export LDFLAGS="-L$DEPS/lib -Wl,-rpath=$RUNTIME/lib"
+          export FREETYPE_CFLAGS="-I$DEPS/include/freetype2"
+          export PULSE_CFLAGS="-I$DEPS/include/pulse"
+          export PULSE_LIBS="-L$DEPS/lib/pulseaudio -lpulse"
+          export SDL2_CFLAGS="-I$DEPS/include/SDL2" SDL2_LIBS="-L$DEPS/lib -lSDL2"
+          export X_CFLAGS="-I$DEPS/include/X11" X_LIBS="-landroid-sysvshm"
+          export GSTREAMER_CFLAGS="-I$DEPS/include/gstreamer-1.0 -I$DEPS/include/glib-2.0 -I$DEPS/lib/glib-2.0/include"
+          export GSTREAMER_LIBS="-L$DEPS/lib -lgstgl-1.0 -lgstapp-1.0 -lgstvideo-1.0 -lgstaudio-1.0 -lglib-2.0 -lgobject-2.0 -lgio-2.0 -lgstbase-1.0 -lgstreamer-1.0"
+          export FFMPEG_CFLAGS="-I$DEPS/include/libavutil -I$DEPS/include/libavcodec -I$DEPS/include/libavformat"
+          export FFMPEG_LIBS="-L$DEPS/lib -lavutil -lavcodec -lavformat"
+          INSTALL_DIR=$DEPS/../opt/wine
+          mkdir -p build-${{ matrix.arch }} && cd build-${{ matrix.arch }}
+          ../wine-src/configure \
+            --enable-archs=$WIN_ARCH \
+            --host=$TARGET \
+            --prefix=$INSTALL_DIR \
+            --bindir=$INSTALL_DIR/bin \
+            --libdir=$INSTALL_DIR/lib \
+            --exec-prefix=$INSTALL_DIR \
+            --with-mingw=clang \
+            --with-wine-tools=../wine-tools \
+            --enable-win64 --disable-win16 --enable-nls \
+            --disable-amd_ags_x64 --enable-wineandroid_drv=no --disable-tests \
+            --with-alsa --without-capi --without-coreaudio --without-cups \
+            --without-dbus --without-ffmpeg --with-fontconfig --with-freetype \
+            --without-gcrypt --without-gettext --with-gettextpo=no \
+            --without-gphoto --with-gnutls --without-gssapi --with-gstreamer \
+            --without-inotify --without-krb5 --without-netapi --without-opencl \
+            --with-opengl --without-osmesa --without-oss --without-pcap \
+            --without-pcsclite --with-pthread --with-pulse --without-sane \
+            --with-sdl --without-udev --without-unwind --without-usb \
+            --without-v4l2 --with-vulkan --without-wayland \
+            --without-xcomposite --without-xcursor --without-xfixes \
+            --without-xinerama --without-xinput --without-xinput2 \
+            --without-xrandr --without-xrender --without-xshape \
+            --with-xshm --without-xxf86vm
 
-      - name: Collect release info
-        id: info
+      - name: Build Wine (${{ matrix.arch }})
         run: |
-          echo "date=$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
-          TAG="${WINE_VERSION}-${WINE_BRANCH}-arm64"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          DEPS=~/termuxfs/${{ matrix.arch }}/data/data/com.termux/files/usr
+          TOOLCHAIN=~/Android/Sdk/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin
+          LLVM_MINGW=~/toolchains/${LLVM_MINGW_PKG}/bin
+          if [ "${{ matrix.arch }}" = "aarch64" ]; then TARGET=aarch64-linux-android28
+          else TARGET=x86_64-linux-android28; fi
+          export PATH=$LLVM_MINGW:$PATH
+          export CC=$TOOLCHAIN/$TARGET-clang CXX=$TOOLCHAIN/$TARGET-clang++
+          export AR=$TOOLCHAIN/llvm-ar RANLIB=$TOOLCHAIN/llvm-ranlib
+          export PKG_CONFIG_LIBDIR=$DEPS/lib/pkgconfig:$DEPS/share/pkgconfig
+          cd build-${{ matrix.arch }}
+          make -j$(nproc)
+
+      - name: Install + Package WCP (${{ matrix.arch }})
+        run: |
+          DEPS=~/termuxfs/${{ matrix.arch }}/data/data/com.termux/files/usr
+          INSTALL_DIR=$DEPS/../opt/wine
+          OUTPUT=~/compiled-files-${{ matrix.arch }}
+          ARCH_NAME=${{ matrix.arch == 'aarch64' && 'arm64ec' || 'x86_64' }}
+          mkdir -p $OUTPUT/bin $OUTPUT/lib $OUTPUT/share
+          cd build-${{ matrix.arch }} && make install -j$(nproc)
+          cp -r $INSTALL_DIR/bin/wine* $OUTPUT/bin/ 2>/dev/null || true
+          cp -r $INSTALL_DIR/bin/reg* $INSTALL_DIR/bin/msi* $OUTPUT/bin/ 2>/dev/null || true
+          cp -r $INSTALL_DIR/bin/notepad $OUTPUT/bin/ 2>/dev/null || true
+          cp -r $INSTALL_DIR/lib/wine $OUTPUT/lib/ 2>/dev/null || true
+          cp -r $INSTALL_DIR/share/wine $OUTPUT/share/ 2>/dev/null || true
+          # Download prefixPack
+          wget -q "https://github.com/GameNative/bionic-prefix-files/raw/main/prefixPack-${ARCH_NAME}.txz" \
+            -O $OUTPUT/prefixPack.txz
+          # Write profile.json
+          cat > $OUTPUT/profile.json << EOF
+          {
+            "type": "Wine",
+            "versionName": "${WINE_VERSION}-ntsync-${ARCH_NAME}",
+            "versionCode": 0,
+            "description": "Wine ${WINE_VERSION} ntsync ${ARCH_NAME} with Android/Termux patches",
+            "files": [],
+            "wine": {
+              "binPath": "bin",
+              "libPath": "lib",
+              "prefixPack": "prefixPack.txz"
+            }
+          }
+          EOF
+          # Pack WCP
+          WCP="$GITHUB_WORKSPACE/wine-${WINE_VERSION}-ntsync-${ARCH_NAME}.wcp.xz"
+          cd $OUTPUT && tar cJf "$WCP" bin lib share prefixPack.txz profile.json
+          sha256sum "$WCP" > "${WCP}.sha256"
+          echo "WCP size: $(du -sh $WCP)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wine-${{ env.WINE_VERSION }}-${{ matrix.arch }}
+          path: |
+            wine-${{ env.WINE_VERSION }}-ntsync-${{ matrix.arch == 'aarch64' && 'arm64ec' || 'x86_64' }}.wcp.xz
+            wine-${{ env.WINE_VERSION }}-ntsync-${{ matrix.arch == 'aarch64' && 'arm64ec' || 'x86_64' }}.wcp.xz.sha256
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    env:
+      WINE_VERSION: ${{ github.event.inputs.wine_version || '11.5' }}
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.info.outputs.tag }}
-          name: "Wine ${{ env.WINE_VERSION }} ${{ env.WINE_BRANCH }} ARM64 (ntsync) — ${{ steps.info.outputs.date }}"
+          tag_name: ${{ env.WINE_VERSION }}-ntsync-bionic
+          name: "Wine ${{ env.WINE_VERSION }} ntsync — Winlator Bionic WCP"
           prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+          files: artifacts/**/*.wcp.xz*
           body: |
-            ## Wine ${{ env.WINE_VERSION }} — ARM64 build for Winlator
+            ## Wine ${{ env.WINE_VERSION }} — Winlator Bionic WCP (ntsync)
 
             | Field | Value |
             |-------|-------|
-            | Wine version | `${{ env.WINE_VERSION }}` |
-            | Branch | `${{ env.WINE_BRANCH }}` |
-            | Source | [dl.winehq.org](https://dl.winehq.org/wine/source/) |
-            | Target arch | `aarch64-linux-gnu` |
-            | PE DLLs | mingw-w64 x86_64 + i686 |
-            | CFLAGS | `-march=armv8-a -O2 -ftree-vectorize` |
-            | Sync backends | ntsync / fsync / esync (runtime via env vars) |
-            | Build date | `${{ steps.info.outputs.date }}` |
-
-            ### Sync backend (set in Winlator container advanced settings)
-            | Backend | Env var | Requirement |
-            |---------|---------|-------------|
-            | **ntsync** | `WINE_NTSYNC=1` | kernel 6.14+ with `/dev/ntsync` |
-            | **fsync** | `WINEFSYNC=1` | kernel with futex2 |
-            | **esync** | `WINEESYNC=1` | any kernel (wide compat) |
-
-            > ntsync info from Kron4ek: run `lsof /dev/ntsync` while Wine is running to confirm it works.
+            | Wine | `${{ env.WINE_VERSION }}` vanilla |
+            | Target | `aarch64/x86_64-linux-android28` (Android NDK) |
+            | Sysroot | Termux (`/data/data/com.termux/files/usr`) |
+            | PE toolchain | bylaws llvm-mingw `${{ env.LLVM_MINGW_TAG }}` (arm64ec + x86_64 + i386) |
+            | Patches | GameNative Android patches |
+            | Sync | ntsync / fsync / esync |
+            | Format | `.wcp.xz` |
 
             ### Files
-            - `*-arm64.tar.xz` — standard arm64, 64-bit Windows apps only
-            - `*-arm64-wow64.tar.xz` — WoW64 mode, runs both 32-bit and 64-bit Windows apps (recommended for Winlator)
+            | File | For |
+            |------|-----|
+            | `*-arm64ec.wcp.xz` | ARM64 devices |
+            | `*-x86_64.wcp.xz` | x86_64 devices |
 
-            ### Installation (Winlator)
-            1. Download the `-wow64` variant
-            2. Winlator → Settings → Wine Version → Import → select the `.tar.xz`
-            3. Set as active Wine version for your container
+            ### Install
+            Import `.wcp.xz` in Winlator Bionic / CMOD / Ludashi via Component Manager → Wine Version
 
-            ### Build scripts
-            https://github.com/${{ github.repository }}
-            Based on [Kron4ek/Wine-Builds](https://github.com/Kron4ek/Wine-Builds) method, adapted for ARM64.
-          files: |
-            wine-${{ env.WINE_VERSION }}-${{ env.WINE_BRANCH }}-arm64.tar.xz
-            wine-${{ env.WINE_VERSION }}-${{ env.WINE_BRANCH }}-arm64.tar.xz.sha256
-            wine-${{ env.WINE_VERSION }}-${{ env.WINE_BRANCH }}-arm64-wow64.tar.xz
-            wine-${{ env.WINE_VERSION }}-${{ env.WINE_BRANCH }}-arm64-wow64.tar.xz.sha256
+            ### Credits
+            Patches + prefixPack + Termux sysroot: [GameNative](https://github.com/GameNative)
+            llvm-mingw: [bylaws/llvm-mingw](https://github.com/bylaws/llvm-mingw)
